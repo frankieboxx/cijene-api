@@ -1,30 +1,22 @@
 #!/bin/bash
 set -euo pipefail
 
-# Crawl-and-import script for Railway cron job
-# Crawls all configured retail chains and imports data into PostgreSQL
+# Crawl-and-import pipeline with email reporting
+# Runs the Python orchestrator that crawls, imports, and sends MJML report
 
-DATE="${1:-$(date +%Y-%m-%d)}"
+DATE="${1:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-/app/output}"
 CHAINS="${CRAWL_CHAINS:-}"
+EXTRA_ARGS=""
 
-echo "=== Crawl & Import: $DATE ==="
+if [ -n "$DATE" ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --date $DATE"
+fi
 
-# Step 1: Crawl
-echo "[1/2] Crawling price data..."
 if [ -n "$CHAINS" ]; then
-    uv run -m crawler.cli.crawl "$OUTPUT_DIR" -d "$DATE" -c "$CHAINS" -v info
-else
-    uv run -m crawler.cli.crawl "$OUTPUT_DIR" -d "$DATE" -v info
+    EXTRA_ARGS="$EXTRA_ARGS --chains $CHAINS"
 fi
 
-# Step 2: Import into database
-ARCHIVE="$OUTPUT_DIR/$DATE.zip"
-if [ -f "$ARCHIVE" ]; then
-    echo "[2/2] Importing data into database..."
-    uv run -m service.db.import "$ARCHIVE"
-    echo "=== Done: $DATE ==="
-else
-    echo "ERROR: Archive not found at $ARCHIVE"
-    exit 1
-fi
+echo "=== Crawl & Import Pipeline ==="
+uv run python -m scripts.pipeline --output-dir "$OUTPUT_DIR" $EXTRA_ARGS
+echo "=== Done ==="

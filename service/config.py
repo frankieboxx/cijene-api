@@ -33,6 +33,12 @@ class Settings:
         self.db_min_connections: int = int(os.getenv("DB_MIN_CONNECTIONS", "5"))
         self.db_max_connections: int = int(os.getenv("DB_MAX_CONNECTIONS", "20"))
 
+        # Email configuration
+        self.email_provider: str = os.getenv("EMAIL_PROVIDER", "mailgun")
+        self.mailgun_api_key: str = os.getenv("MAILGUN_API_KEY", "")
+        self.mailgun_domain: str = os.getenv("MAILGUN_DOMAIN", "")
+        self.report_recipients: str = os.getenv("REPORT_RECIPIENTS", "")
+
     def get_db(self) -> "Database":
         """
         Get the database instance based on the configured settings.
