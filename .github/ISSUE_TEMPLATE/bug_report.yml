@@ -1,0 +1,62 @@
+name: Prijava greške
+description: Prijavite grešku kako bismo je mogli ispraviti
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Hvala što ste prijavili grešku! Molimo ispunite donje informacije kako bismo mogli brže riješiti problem.
+  - type: textarea
+    id: description
+    attributes:
+      label: Opis greške
+      description: Jasno i sažeto opišite što se događa.
+      placeholder: Opišite grešku...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Koraci za reprodukciju
+      description: Navedite korake kako reproducirati grešku.
+      placeholder: |
+        1. Pokrenite komandu '...'
+        2. Pozovite endpoint '...'
+        3. Vidite grešku
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Očekivano ponašanje
+      description: Jasno i sažeto opišite što ste očekivali da se dogodi.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Stvarno ponašanje
+      description: Jasno i sažeto opišite što se zapravo dogodilo.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Okruženje
+      description: |
+        Navedite informacije o okruženju (npr. verzija Pythona, OS, verzija projekta).
+      placeholder: |
+        - OS: Ubuntu 22.04
+        - Python: 3.13
+        - Verzija projekta: main
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevantni logovi
+      description: Dodajte relevantne logove ako ih imate.
+      render: shell
+    validations:
+      required: false
