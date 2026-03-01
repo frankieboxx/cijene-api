@@ -77,7 +77,8 @@ class MetroCrawler(BaseCrawler):
 
         Example URL path part:
         skladiste_za_trgovanje_robom_na_veliko_i_malo_METRO_20250521T1149_S20_CESTA_PAPE_IVANA_PAVLA_II_3%2C_KASTEL_SUCURAC.csv
-
+        supermarket_METRO_20260301T0632_S19_FASCINSKA_BB%2C_POREC.csv
+        supermarket_METRO_20260301T0631_S16_TOMISLAVA_MACANA_2%2C_DUBROVNIK.csv
         Args:
             url: CSV download URL with store information in the filename
 
