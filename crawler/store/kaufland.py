@@ -159,6 +159,42 @@ class KauflandCrawler(BaseCrawler):
                 continue
             urls[label] = f"{self.BASE_URL}{url}"
 
+        # If no CSVs found for the exact date, fall back to the latest
+        # available date (Kaufland publishes ~daily but may lag)
+        if not urls:
+            logger.info(
+                f"No CSVs found for {date_str}/{date_str2}, "
+                f"searching for latest available date"
+            )
+
+            # Extract dates from all labels and find the latest
+            date_pattern = re.compile(r"_(\d{2})(\d{2})(\d{4})_")
+            date_pattern2 = re.compile(r"_(\d{2})_(\d{2})_(\d{4})_")
+            latest_date = None
+            for item in json_data:
+                label = item.get("label", "")
+                m = date_pattern.search(label) or date_pattern2.search(label)
+                if m:
+                    try:
+                        d = datetime.date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+                        if latest_date is None or d > latest_date:
+                            latest_date = d
+                    except ValueError:
+                        continue
+
+            if latest_date:
+                fallback_str = latest_date.strftime("_%d_%m_%Y_")
+                fallback_str2 = latest_date.strftime("_%d%m%Y_")
+                logger.info(f"Falling back to latest date: {latest_date}")
+                for item in json_data:
+                    label = item.get("label")
+                    url = item.get("path")
+                    if not label or not url:
+                        continue
+                    if fallback_str not in label and fallback_str2 not in label:
+                        continue
+                    urls[label] = f"{self.BASE_URL}{url}"
+
         return urls
 
     def parse_store_info(self, title: str) -> Store:

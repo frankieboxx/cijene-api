@@ -341,7 +341,7 @@ def send_report(report: PipelineReport) -> bool:
 
     try:
         response = httpx.post(
-            f"https://api.mailgun.net/v3/{domain}/messages",
+            f"https://api.eu.mailgun.net/v3/{domain}/messages",
             auth=("api", api_key),
             data={
                 "from": f"Cijene API <noreply@{domain}>",

@@ -79,6 +79,9 @@ class DmCrawler(BaseCrawler):
         target_date_str = f"{target_date.day}.{target_date.month}.{target_date.year}"
         logger.info(f"Looking for Excel file with date {target_date_str}")
 
+        # Collect all dated entries so we can fall back to the latest one
+        dated_entries: list[tuple[datetime.date, str, str]] = []
+
         for entry in excel_entries:
             headline = entry.get("headline", "")
             link_target = entry.get("linkTarget", "")
@@ -88,17 +91,30 @@ class DmCrawler(BaseCrawler):
 
             try:
                 link_date = self.parse_date_from_title(headline)
+                # Ensure URL is absolute
+                if not link_target.startswith(("http://", "https://")):
+                    url = f"{self.CONTENT_BASE_URL}{link_target}"
+                else:
+                    url = link_target
+
                 if link_date == target_date:
-                    # Ensure URL is absolute
-                    if not link_target.startswith(("http://", "https://")):
-                        url = f"{self.CONTENT_BASE_URL}{link_target}"
-                    else:
-                        url = link_target
-                    logger.info(f"Found Excel file with date {link_date}: {url}")
+                    logger.info(f"Found Excel file with exact date {link_date}: {url}")
                     return url
+
+                dated_entries.append((link_date, headline, url))
             except Exception as e:
                 logger.warning(f"Error parsing date from headline '{headline}': {e}")
                 continue
+
+        # No exact match — fall back to the most recent available date
+        if dated_entries:
+            dated_entries.sort(key=lambda x: x[0], reverse=True)
+            best_date, best_headline, best_url = dated_entries[0]
+            logger.info(
+                f"No Excel for {target_date_str}, using latest available "
+                f"date {best_date} from '{best_headline}'"
+            )
+            return best_url
 
         raise ValueError(f"No Excel file found for date {target_date_str}")
 
