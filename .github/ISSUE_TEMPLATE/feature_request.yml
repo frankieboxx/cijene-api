@@ -1,0 +1,39 @@
+name: Prijedlog nove funkcionalnosti
+description: Predložite novu funkcionalnost ili poboljšanje
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Hvala na prijedlogu! Opišite funkcionalnost koju biste željeli vidjeti u projektu.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem koji rješavate
+      description: Opišite problem ili potrebu koja je potakla ovaj prijedlog. Npr. "Frustrira me kada..."
+      placeholder: Opišite problem...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Predloženo rješenje
+      description: Jasno i sažeto opišite što biste željeli da se implementira.
+      placeholder: Opišite predloženo rješenje...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative koje ste razmatrali
+      description: Opišite alternativna rješenja koja ste razmatrali, ako ih ima.
+    validations:
+      required: false
+  - type: textarea
+    id: additional
+    attributes:
+      label: Dodatni kontekst
+      description: Dodajte bilo koji dodatni kontekst, primjere ili screenshotove o prijedlogu.
+    validations:
+      required: false
