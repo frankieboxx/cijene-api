@@ -254,10 +254,213 @@ service/
 pyproject.toml         # rapidfuzz dependency (already added)
 ```
 
+## Step 12 — Price Check API Endpoint
+
+Add a REST API endpoint to cijene-api that accepts a product code (`sifra`) and chain name, and returns current prices across Dubrovnik stores.
+
+### Endpoint:
+
+```
+GET /api/v1/price-check?code={sifra}&chain={chain_code}
+```
+
+### Parameters:
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `code` | string | yes | Product code (Metro `sifra`, Konzum code, etc.) |
+| `chain` | string | no | Chain filter: `metro`, `konzum`, `tommy`, etc. If omitted, search all chains |
+| `city` | string | no | City filter (default: `Dubrovnik`) |
+
+### Response:
+
+```json
+{
+  "query": { "code": "224155", "chain": null, "city": "Dubrovnik" },
+  "product": {
+    "name": "180G ARO TEK.JOGURT 2,8%",
+    "code": "224155",
+    "category": "Mliječni proizvodi"
+  },
+  "prices": [
+    {
+      "chain": "metro",
+      "store": "Metro Dubrovnik",
+      "price": 0.30,
+      "unit_price": 1.67,
+      "unit": "€/kg",
+      "date": "2026-03-01",
+      "quantity": "180 G"
+    },
+    {
+      "chain": "konzum",
+      "store": "Konzum Dubrovnik",
+      "price": 0.45,
+      "unit_price": 2.50,
+      "unit": "€/kg",
+      "date": "2026-03-01",
+      "quantity": "180 G"
+    }
+  ],
+  "cheapest": {
+    "chain": "metro",
+    "unit_price": 1.67,
+    "savings_vs_most_expensive": "33.2%"
+  }
+}
+```
+
+### Implementation:
+- Add to `service/routers/v1.py` (or new `service/routers/price_check.py`)
+- Reuse existing `db` connection from `settings.get_db()`
+- SQL: lookup `chain_products.code` → join `prices` → filter by store city/chain
+- Requires auth (existing `RequireAuth` dependency)
+- Also support fuzzy name search: `GET /api/v1/price-check?name=jogurt&chain=metro`
+
+### Use cases:
+- Atrium ERP integration — when creating purchase order, check real-time prices
+- Manual spot-check from terminal: `curl -H "Authorization: Bearer $TOKEN" "https://api.../v1/price-check?code=224155"`
+- Future: Atrium UI "check alternatives" button
+
+---
+
+## Step 13 — GitHub Actions Deploy Workflow for Railway
+
+Create `.github/workflows/deploy.yml` — triggered on push to `main` (after CI passes), deploys to Railway.
+
+### Requirements:
+- Railway project ID: `c9eeed53-f5d1-4c5e-9eae-68793b4691c9`
+- Crawler service ID: `74f04ed3-edf6-4293-a47c-82daad7dffa7`
+- Needs `RAILWAY_TOKEN` secret in GitHub repo settings
+- Should only deploy when CI build succeeds (use `needs: build`)
+
+### Workflow:
+
+```yaml
+name: Deploy to Railway
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  build:
+    uses: ./.github/workflows/ci.yml  # reuse existing CI
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --service ${{ vars.RAILWAY_SERVICE_ID || '74f04ed3-edf6-4293-a47c-82daad7dffa7' }}
+```
+
+### Setup steps:
+1. Generate Railway API token: `railway login` → `railway tokens create`
+2. Add `RAILWAY_TOKEN` as GitHub Actions secret in repo settings
+3. Optionally add `RAILWAY_SERVICE_ID` as GitHub Actions variable (for flexibility)
+4. Existing CI workflow (`ci.yml`) stays as-is for lint/type checks
+5. Deploy workflow triggers only on `main` push, after CI passes
+
+### Notes:
+- Railway also supports auto-deploy from GitHub (already connected) — this workflow adds explicit control + gating behind CI
+- If Railway auto-deploy is sufficient, this step is optional but recommended for visibility and CI gating
+
+---
+
+## Step 14 — Product Image Crawler & Thumbnail Storage
+
+Crawl product images from retailer websites for products that exist in the Atrium DB, convert to 200×200 thumbnails, and store in the cijene-api (`DB_DSN`) database with product code and EAN.
+
+### Scope:
+- **Only** crawl images for products that appear in Atrium `troskovi_detalji` (matched by `sifra` or fuzzy name)
+- Sources: Metro, Konzum, Tommy, Studenac, Lidl, Ribola (each has different image URL patterns)
+- Store as JPEG thumbnail (200×200, quality 85) in `product_images` table
+
+### Image URL patterns per chain:
+
+| Chain | Pattern | Source |
+|-------|---------|--------|
+| Metro | `https://metrocjenik.com.hr/images/{sifra}.jpg` or scrape from product page | CSV has SIFRA |
+| Konzum | `https://www.konzum.hr/image/{product_id}` | Product page scrape |
+| Tommy | Product page scrape via product code | HTML product detail |
+| Studenac | Product page scrape | HTML product detail |
+| Lidl | Product page scrape (`lidl.hr`) | HTML product detail |
+| Ribola | Product page scrape | HTML product detail |
+
+> **Note**: Exact image URL patterns need to be verified per chain website. Some may require headless browser (playwright) for JS-rendered pages.
+
+### DB Model:
+
+New table `product_images` in `DB_DSN` database:
+
+```sql
+CREATE TABLE IF NOT EXISTS product_images (
+    id SERIAL PRIMARY KEY,
+    chain_product_id INTEGER NOT NULL REFERENCES chain_products (id),
+    ean VARCHAR(50),
+    image_data BYTEA NOT NULL,
+    image_format VARCHAR(10) NOT NULL DEFAULT 'jpeg',
+    width INTEGER NOT NULL DEFAULT 200,
+    height INTEGER NOT NULL DEFAULT 200,
+    source_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (chain_product_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_images_ean ON product_images (ean);
+```
+
+### Implementation:
+
+1. **Script**: `scripts/crawl_images.py`
+2. **Flow**:
+   - Query Atrium DB → get all unique `sifra` values from `troskovi_detalji`
+   - For each `sifra`, find matching `chain_products` in cijene-api DB (across all chains)
+   - For each matched `chain_product`, check if image already exists in `product_images`
+   - If not, crawl the product page, extract `<img>` tag with product photo
+   - Download image, resize to 200×200 with Pillow, convert to JPEG
+   - Insert into `product_images` with `chain_product_id`, EAN (from `chain_products` → `products.ean`), and thumbnail bytes
+3. **Dependencies**: `Pillow>=10.0`, `httpx` (already used), optionally `playwright` for JS-heavy sites
+4. **Rate limiting**: 1 req/sec per domain, respect robots.txt
+5. **Cron**: Run weekly (not daily — images don't change often): `0 10 * * 0` (Sundays 10:00)
+
+### API endpoint (optional, extend Step 12):
+
+```
+GET /api/v1/product-image/{chain_product_id}
+→ Returns image/jpeg (200×200 thumbnail)
+```
+
+### Use cases:
+- Atrium ERP — display product images in purchase comparison UI
+- Price compare email — embed thumbnails for top items (base64 inline)
+- Future dashboard — visual product catalog
+
+**Files**: `scripts/crawl_images.py`, `service/db/psql.sql` (migration), `service/routers/v1.py` (optional API)
+**Dependencies**: `Pillow>=10.0`
+**Priority**: P3
+
+---
+
 ## Priority Order
 
-1. **Steps 1-2**: Fix normalization + fuzzy matching (unblocks everything)
-2. **Step 3**: Updated SQL query
-3. **Steps 4-6**: New analysis features (independent of each other)
-4. **Step 7**: Email template (depends on 4-6)
-5. **Steps 8-11**: Deploy & harden
+| Priority | Steps | Issues | Description |
+|----------|-------|--------|-------------|
+| P0 | 1-2 | #72, #73 | Fix normalization + fuzzy matching (unblocks everything) |
+| P1 | 3 | #74 | Updated SQL query |
+| P2 | 4-6 | #75, #76, #77 | New analysis features (independent of each other) |
+| P2 | 7 | #78 | Email template (depends on 4-6) |
+| P2 | 12 | #83 | Price check API endpoint |
+| P3 | 8-11 | #79, #80, #81, #82 | Deploy & harden |
+| P3 | 13 | #84 | Railway deploy workflow |
+| P3 | 14 | #85 | Product image crawler & thumbnail storage |
