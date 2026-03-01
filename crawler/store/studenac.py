@@ -46,6 +46,19 @@ class StudenacCrawler(BaseCrawler):
         "category": ("KategorijeProizvoda", False),
     }
 
+    # Only collect data from these cities
+    TARGET_CITIES = {"Dubrovnik", "Pazin", "Zagreb", "Osijek", "Vukovar"}
+
+    # Limit number of stores per city (None = no limit)
+    MAX_STORES_PER_CITY: dict[str, int] = {
+        "Zagreb": 1,
+    }
+
+    # Only keep these store types per city (None = all types)
+    STORE_TYPE_FILTER: dict[str, str] = {
+        "Zagreb": "supermarket",
+    }
+
     def parse_address(self, address: str) -> Tuple[str, str]:
         """
         Parse the address string into street address and city components.
@@ -149,13 +162,31 @@ class StudenacCrawler(BaseCrawler):
             ValueError: If the price list cannot be fetched or parsed
         """
         stores = []
+        city_counts: dict[str, int] = {}
         zip_url = f"{self.BASE_URL}/cjenici/PROIZVODI-{date:%Y-%m-%d}.zip"
 
         for filename, content in self.get_zip_contents(zip_url, ".xml"):
             logger.debug(f"Processing file: {filename}")
             store = self.parse_xml(content)
-            if store:
-                stores.append(store)
+            if not store:
+                continue
+
+            if store.city not in self.TARGET_CITIES:
+                logger.info(f"Skipping store {store.store_id} {store.city} - not in target cities")
+                continue
+
+            type_filter = self.STORE_TYPE_FILTER.get(store.city)
+            if type_filter and store.store_type != type_filter:
+                logger.info(f"Skipping store {store.store_id} {store.city} - type {store.store_type} != {type_filter}")
+                continue
+
+            max_stores = self.MAX_STORES_PER_CITY.get(store.city)
+            if max_stores and city_counts.get(store.city, 0) >= max_stores:
+                logger.info(f"Skipping store {store.store_id} {store.city} - already have {max_stores} store(s)")
+                continue
+
+            stores.append(store)
+            city_counts[store.city] = city_counts.get(store.city, 0) + 1
 
         return stores
 

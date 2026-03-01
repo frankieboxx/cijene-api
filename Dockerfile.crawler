@@ -1,0 +1,44 @@
+# Railway crawler Dockerfile - runs crawl-and-import as a cron job
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUTF8=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    TZ=Europe/Zagreb \
+    DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    unzip \
+    ca-certificates \
+    tzdata \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv==0.7.14
+
+RUN useradd --create-home --shell /bin/bash --uid 1001 --no-log-init appuser
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+COPY service/ ./service/
+COPY crawler/ ./crawler/
+COPY enrichment/ ./enrichment/
+COPY scripts/ ./scripts/
+
+RUN chown -R appuser:appuser /app \
+    && mkdir -p /app/data /app/output \
+    && chown -R appuser:appuser /app/data /app/output
+
+USER appuser
+
+RUN uv sync --frozen --no-dev
+
+CMD ["bash", "/app/scripts/crawl-and-import.sh"]

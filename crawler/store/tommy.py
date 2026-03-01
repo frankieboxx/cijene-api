@@ -27,6 +27,19 @@ class TommyCrawler(BaseCrawler):
     CHAIN = "tommy"
     BASE_URL = "https://spiza.tommy.hr/api/v2"
 
+    # Only collect data from these cities
+    TARGET_CITIES = {"Dubrovnik", "Pazin", "Zagreb", "Osijek", "Vukovar"}
+
+    # Limit number of stores per city (None = no limit)
+    MAX_STORES_PER_CITY: dict[str, int] = {
+        "Zagreb": 1,
+    }
+
+    # Only keep these store types per city (None = all types)
+    STORE_TYPE_FILTER: dict[str, str] = {
+        "Zagreb": "supermarket",
+    }
+
     def fetch_stores_list(self, date: datetime.date) -> dict[str, str]:
         """
         Fetch the list of store price tables for a specific date.
@@ -342,11 +355,27 @@ class TommyCrawler(BaseCrawler):
             return []
 
         stores = []
+        city_counts: dict[str, int] = {}
+
         for filename, url in store_map.items():
             # Extract store information
             store_type, store_id, address, zipcode, city = (
                 self.parse_store_from_filename(filename)
             )
+
+            if city not in self.TARGET_CITIES:
+                logger.info(f"Skipping store {store_id} {city} - not in target cities")
+                continue
+
+            type_filter = self.STORE_TYPE_FILTER.get(city)
+            if type_filter and store_type != type_filter:
+                logger.info(f"Skipping store {store_id} {city} - type {store_type} != {type_filter}")
+                continue
+
+            max_stores = self.MAX_STORES_PER_CITY.get(city)
+            if max_stores and city_counts.get(city, 0) >= max_stores:
+                logger.info(f"Skipping store {store_id} {city} - already have {max_stores} store(s)")
+                continue
 
             store = Store(
                 chain="tommy",
@@ -364,6 +393,7 @@ class TommyCrawler(BaseCrawler):
 
             store.items = products
             stores.append(store)
+            city_counts[city] = city_counts.get(city, 0) + 1
 
         return stores
 

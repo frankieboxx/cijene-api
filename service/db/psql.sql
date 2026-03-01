@@ -63,7 +63,7 @@ RETURNS text
 LANGUAGE sql
 IMMUTABLE PARALLEL SAFE STRICT
 AS $function$
-    SELECT unaccent('unaccent', $1)
+    SELECT unaccent('unaccent'::regdictionary, $1)
 $function$;
 ALTER TABLE stores
 ADD COLUMN IF NOT EXISTS earth_point earth GENERATED ALWAYS AS (ll_to_earth (lat, lon)) STORED;

@@ -80,7 +80,26 @@ class PostgresDatabase(Database):
                 schema_sql = f.read()
 
             async with self._get_conn() as conn:
-                await conn.execute(schema_sql)
+                # First, ensure extensions are created (must execute separately
+                # so they're available for functions that reference them)
+                extensions = [
+                    "CREATE EXTENSION IF NOT EXISTS cube;",
+                    "CREATE EXTENSION IF NOT EXISTS earthdistance;",
+                    "CREATE EXTENSION IF NOT EXISTS pg_trgm;",
+                    "CREATE EXTENSION IF NOT EXISTS unaccent;",
+                ]
+                for ext in extensions:
+                    try:
+                        await conn.execute(ext)
+                    except Exception as e:
+                        self.logger.warning(f"Extension creation warning: {e}")
+
+                # Then execute the full schema (extensions will already exist)
+                try:
+                    await conn.execute(schema_sql)
+                except Exception as e:
+                    self.logger.warning(f"Schema execution warning: {e}")
+
                 self.logger.info("Database tables created successfully")
         except Exception as e:
             self.logger.error(f"Error creating tables: {e}")
@@ -303,6 +322,37 @@ class PostgresDatabase(Database):
             "INSERT INTO products (ean) VALUES ($1) RETURNING id",
             ean,
         )
+
+    async def add_many_eans(self, eans: list[str]) -> dict[str, int]:
+        """
+        Bulk-add empty products with only EAN codes using COPY + temp table.
+
+        Args:
+            eans: List of EAN codes to add.
+
+        Returns:
+            A dictionary mapping each EAN to its product ID.
+        """
+        if not eans:
+            return {}
+
+        async with self._atomic() as conn:
+            await conn.execute(
+                "CREATE TEMP TABLE temp_eans (ean VARCHAR(100)) ON COMMIT DROP"
+            )
+            await conn.copy_records_to_table(
+                "temp_eans",
+                records=[(e,) for e in eans],
+            )
+            rows = await conn.fetch(
+                """
+                INSERT INTO products (ean)
+                SELECT ean FROM temp_eans
+                ON CONFLICT (ean) DO UPDATE SET ean = EXCLUDED.ean
+                RETURNING id, ean
+                """
+            )
+            return {row["ean"]: row["id"] for row in rows}
 
     async def get_products_by_ean(self, ean: list[str]) -> list[ProductWithId]:
         async with self._get_conn() as conn:

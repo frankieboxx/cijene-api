@@ -43,6 +43,14 @@ class RotoCrawler(BaseCrawler):
         "category": ("Kategorija proizvoda", False),
     }
 
+    # Only collect data from these cities
+    TARGET_CITIES = {"Dubrovnik", "Zagreb", "Osijek"}
+
+    # Map zipcodes of suburbs to their parent city
+    ZIPCODE_CITY_MAP: dict[str, str] = {
+        "20236": "Dubrovnik",  # Komolac
+    }
+
     def get_csv_urls(self, soup: BeautifulSoup, date: datetime.date) -> list[str]:
         anchors = soup.select("a.cjenici-table-row")
         hr_date = date.strftime("%d.%m.%Y")
@@ -92,7 +100,7 @@ class RotoCrawler(BaseCrawler):
         for part in parts:
             part = part.strip()
             if re.match("D[0-9]+ ", part):
-                store_id, name = part.split(" ")
+                store_id, name = part.split(" ", maxsplit=1)
                 matches.append((store_id, name))
 
         # Ideally the count will match the addresses extracted from the web page
@@ -107,6 +115,13 @@ class RotoCrawler(BaseCrawler):
             else:
                 street_address, zipcode, city = "", "", ""
                 logger.warning(f"Unable to find address for {store_id} {name}")
+
+            if city not in self.TARGET_CITIES:
+                logger.info(
+                    f"Skipping store {store_id} {name} (city: {city}) "
+                    f"- not in target cities: {self.TARGET_CITIES}"
+                )
+                continue
 
             yield Store(
                 chain=self.CHAIN,
@@ -131,6 +146,7 @@ class RotoCrawler(BaseCrawler):
             assert isinstance(address, str)
             street_address, zipcode_city = address.strip(" -").split(", ")
             zipcode, city = zipcode_city.split(" ", maxsplit=1)
+            city = self.ZIPCODE_CITY_MAP.get(zipcode, city)
 
             # Remove unwanted address prefix
             to_strip = "Jankomir- "

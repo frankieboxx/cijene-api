@@ -41,6 +41,19 @@ class KonzumCrawler(BaseCrawler):
         "category": ("KATEGORIJA PROIZVODA", False),
     }
 
+    # Only collect data from these cities
+    TARGET_CITIES = {"Dubrovnik", "Pazin", "Zagreb", "Osijek", "Vukovar"}
+
+    # Limit number of stores per city (None = no limit)
+    MAX_STORES_PER_CITY: dict[str, int] = {
+        "Zagreb": 1,
+    }
+
+    # Only keep these store types per city (None = all types)
+    STORE_TYPE_FILTER: dict[str, str] = {
+        "Zagreb": "supermarket",
+    }
+
     ADDRESS_PATTERN = re.compile(r"(.*) (\d{5}) (.*)")
 
     def parse_index(self, content: str) -> list[str]:
@@ -173,19 +186,47 @@ class KonzumCrawler(BaseCrawler):
         csv_links = self.get_index(date)
         stores = []
 
+        city_counts: dict[str, int] = {}
+
         for url in csv_links:
             try:
                 store = self.parse_store_info(url)
-                products = self.get_store_prices(url)
             except Exception as e:
                 logger.error(f"Error processing store from {url}: {e}", exc_info=True)
                 continue
 
+            if store.city not in self.TARGET_CITIES:
+                logger.info(
+                    f"Skipping store {store.store_id} {store.city}"
+                    f" - not in target cities"
+                )
+                continue
+
+            # Apply store type filter for specific cities
+            type_filter = self.STORE_TYPE_FILTER.get(store.city)
+            if type_filter and store.store_type != type_filter:
+                logger.info(
+                    f"Skipping store {store.store_id} {store.city}"
+                    f" - type {store.store_type} != {type_filter}"
+                )
+                continue
+
+            # Apply max stores per city limit
+            max_stores = self.MAX_STORES_PER_CITY.get(store.city)
+            if max_stores and city_counts.get(store.city, 0) >= max_stores:
+                logger.info(
+                    f"Skipping store {store.store_id} {store.city}"
+                    f" - already have {max_stores} store(s)"
+                )
+                continue
+
+            products = self.get_store_prices(url)
             if not products:
                 logger.warning(f"Error getting prices from {url}, skipping")
                 continue
             store.items = products
             stores.append(store)
+            city_counts[store.city] = city_counts.get(store.city, 0) + 1
 
         return stores
 

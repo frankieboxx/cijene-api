@@ -59,8 +59,14 @@ async def custom_404_handler(request: Request, exc: HTTPException):
 
 @app.get("/", include_in_schema=False)
 async def root():
-    """Root endpoint redirects to main website."""
-    return RedirectResponse(url=settings.redirect_url, status_code=302)
+    """Root endpoint with API info."""
+    return {
+        "name": "Cijene API",
+        "version": settings.version,
+        "description": "Croatian grocery price tracking service",
+        "docs": f"{settings.base_url}/docs",
+        "health": f"{settings.base_url}/health",
+    }
 
 
 @app.get("/health", tags=["Service status"])

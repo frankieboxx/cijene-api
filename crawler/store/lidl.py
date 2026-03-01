@@ -46,6 +46,14 @@ class LidlCrawler(BaseCrawler):
         "category": ("KATEGORIJA_PROIZVODA", False),
     }
 
+    # Only collect data from these cities
+    TARGET_CITIES = {"Dubrovnik", "Pazin", "Zagreb", "Osijek", "Vukovar"}
+
+    # Limit number of stores per city (None = no limit)
+    MAX_STORES_PER_CITY: dict[str, int] = {
+        "Zagreb": 1,
+    }
+
     ADDRESS_PATTERN = re.compile(
         r"^(Supermarket)\s+"  # 'Supermarket'
         r"(\d+)_+"  # store number (digits)
@@ -130,12 +138,22 @@ class LidlCrawler(BaseCrawler):
         """
         zip_url = self.get_index(date)
         stores = []
+        city_counts: dict[str, int] = {}
 
         for filename, content in self.get_zip_contents(zip_url, ".csv"):
             logger.debug(f"Processing file: {filename}")
             store = self.parse_store_from_filename(filename)
             if not store:
                 logger.warning(f"Skipping CSV {filename} due to store parsing failure")
+                continue
+
+            if store.city not in self.TARGET_CITIES:
+                logger.info(f"Skipping store {store.store_id} {store.city} - not in target cities")
+                continue
+
+            max_stores = self.MAX_STORES_PER_CITY.get(store.city)
+            if max_stores and city_counts.get(store.city, 0) >= max_stores:
+                logger.info(f"Skipping store {store.store_id} {store.city} - already have {max_stores} store(s)")
                 continue
 
             # Parse CSV and add products to the store
@@ -153,6 +171,7 @@ class LidlCrawler(BaseCrawler):
             products = self.parse_csv(text, delimiter=delimiter)
             store.items = products
             stores.append(store)
+            city_counts[store.city] = city_counts.get(store.city, 0) + 1
 
         return stores
 

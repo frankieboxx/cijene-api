@@ -1,0 +1,60 @@
+# Railway-optimized single-stage Dockerfile
+FROM python:3.13-slim
+
+# Labels
+LABEL org.opencontainers.image.title="Cijene API"
+LABEL org.opencontainers.image.description="Croatian grocery price tracking service"
+
+# Environment
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUTF8=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    TZ=Europe/Zagreb \
+    DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    unzip \
+    ca-certificates \
+    tzdata \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN pip install --no-cache-dir uv==0.7.14
+
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash --uid 1001 --no-log-init appuser
+
+WORKDIR /app
+
+# Copy dependency files first (caching)
+COPY pyproject.toml uv.lock ./
+
+# Copy ALL source code before sync so uv can install the project
+COPY service/ ./service/
+COPY crawler/ ./crawler/
+COPY enrichment/ ./enrichment/
+COPY scripts/ ./scripts/
+
+# Set permissions
+RUN chown -R appuser:appuser /app \
+    && mkdir -p /app/data /app/output \
+    && chown -R appuser:appuser /app/data /app/output
+
+USER appuser
+
+# Install dependencies (no dev deps)
+RUN uv sync --frozen --no-dev
+
+EXPOSE 8000
+
+# Default: run the API server
+CMD ["uv", "run", "-m", "service.main"]

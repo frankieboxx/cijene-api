@@ -39,6 +39,9 @@ class RibolaCrawler(BaseCrawler):
         "Zadar",
     ]
 
+    # Only collect data from these cities
+    TARGET_CITIES = {"Dubrovnik"}
+
     PRICE_MAP = {
         "price": ("MaloprodajnaCijena", False),
         "unit_price": ("CijenaZaJedinicuMjere", False),
@@ -267,6 +270,10 @@ class RibolaCrawler(BaseCrawler):
                 logger.error(
                     f"Error processing Ribola store from {url}: {e}", exc_info=True
                 )
+                continue
+
+            if store.city not in self.TARGET_CITIES:
+                logger.info(f"Skipping store {store.store_id} {store.city} - not in target cities")
                 continue
 
             if not store.items:
