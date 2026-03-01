@@ -1,0 +1,35 @@
+name: Deploy to Railway
+# Deploys to Railway after successful CI build on main branch.
+#
+# Required GitHub repository configuration:
+#   Secrets: RAILWAY_TOKEN — Railway API token
+#   Variables: RAILWAY_SERVICE_ID — Railway service ID to deploy
+#     (Crawler service: 74f04ed3-edf6-4293-a47c-82daad7dffa7)
+#     (Railway project: c9eeed53-f5d1-4c5e-9eae-68793b4691c9)
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  build:
+    permissions: {}
+    uses: ./.github/workflows/ci.yml  # reuse existing CI
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --service ${{ vars.RAILWAY_SERVICE_ID }}

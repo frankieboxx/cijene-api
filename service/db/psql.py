@@ -810,3 +810,110 @@ class PostgresDatabase(Database):
             if row:
                 return User(**row)  # type: ignore
             return None
+
+    async def get_price_check(
+        self,
+        code: str | None = None,
+        name: str | None = None,
+        chain: str | None = None,
+        city: str = "Dubrovnik",
+    ) -> list[dict[str, Any]]:
+        """Get current prices for a product by code or fuzzy name."""
+        async with self._get_conn() as conn:
+            params: list[Any] = []
+            where: list[str] = []
+            param_idx = 1
+
+            # Filter by city
+            where.append(f"s.city ILIKE ${param_idx}")
+            params.append(f"%{city}%")
+            param_idx += 1
+
+            # Filter by chain
+            if chain:
+                where.append(f"c.code = ${param_idx}")
+                params.append(chain.lower())
+                param_idx += 1
+
+            # Price date filter (last 3 days)
+            where.append(f"p.price_date >= CURRENT_DATE - INTERVAL '3 days'")
+
+            if code:
+                # Exact code match
+                where.append(f"cp.code = ${param_idx}")
+                params.append(code)
+                param_idx += 1
+
+                query = f"""
+                    SELECT
+                        c.code AS chain,
+                        cp.name AS product_name,
+                        cp.code AS product_code,
+                        cp.category,
+                        cp.quantity,
+                        cp.unit,
+                        p.regular_price,
+                        p.special_price,
+                        p.unit_price,
+                        p.price_date,
+                        s.city AS store_city,
+                        s.address AS store_address
+                    FROM prices p
+                    JOIN chain_products cp ON p.chain_product_id = cp.id
+                    JOIN stores s ON p.store_id = s.id
+                    JOIN chains c ON s.chain_id = c.id
+                    WHERE {" AND ".join(where)}
+                    ORDER BY p.unit_price ASC NULLS LAST
+                """
+            elif name:
+                # Fuzzy name search using trigram similarity
+                where.append(
+                    f"lower(immutable_unaccent(cp.name)) % immutable_unaccent(${param_idx})"
+                )
+                params.append(name.lower())
+                param_idx += 1
+
+                query = f"""
+                    SELECT
+                        c.code AS chain,
+                        cp.name AS product_name,
+                        cp.code AS product_code,
+                        cp.category,
+                        cp.quantity,
+                        cp.unit,
+                        p.regular_price,
+                        p.special_price,
+                        p.unit_price,
+                        p.price_date,
+                        s.city AS store_city,
+                        s.address AS store_address,
+                        (1 - (lower(immutable_unaccent(cp.name)) <-> immutable_unaccent(${param_idx - 1})))
+                            AS similarity
+                    FROM prices p
+                    JOIN chain_products cp ON p.chain_product_id = cp.id
+                    JOIN stores s ON p.store_id = s.id
+                    JOIN chains c ON s.chain_id = c.id
+                    WHERE {" AND ".join(where)}
+                    ORDER BY similarity DESC, p.unit_price ASC NULLS LAST
+                    LIMIT 50
+                """
+            else:
+                return []
+
+            rows = await conn.fetch(query, *params)
+            return [dict(r) for r in rows]
+
+    async def get_product_image(self, chain_product_id: int) -> bytes | None:
+        """Get stored thumbnail image bytes for a chain product."""
+        async with self._get_conn() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT image_data
+                FROM product_images
+                WHERE chain_product_id = $1
+                """,
+                chain_product_id,
+            )
+            if row:
+                return bytes(row["image_data"])
+            return None

@@ -1,7 +1,7 @@
 import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from service.config import settings
@@ -482,3 +482,177 @@ async def chain_stats() -> ChainStatsResponse:
 
     chain_stats = await db.list_latest_chain_stats()
     return ChainStatsResponse(chain_stats=chain_stats)
+
+
+# ---------------------------------------------------------------------------
+# Price Check endpoint
+# ---------------------------------------------------------------------------
+
+
+class PriceCheckProductInfo(BaseModel):
+    """Product information for the price check response."""
+
+    name: str = Field(..., description="Product name.")
+    code: str = Field(..., description="Product code within the chain.")
+    category: str | None = Field(None, description="Product category.")
+
+
+class PriceCheckEntry(BaseModel):
+    """Single price entry for a product in the price check response."""
+
+    chain: str = Field(..., description="Retail chain code.")
+    store: str | None = Field(None, description="Store city/address.")
+    price: Decimal = Field(..., description="Regular price.")
+    unit_price: Decimal | None = Field(None, description="Unit price (€/kg or €/L).")
+    unit: str | None = Field(None, description="Unit of measurement.")
+    date: datetime.date = Field(..., description="Price date.")
+    quantity: str | None = Field(None, description="Package quantity.")
+
+
+class PriceCheckCheapest(BaseModel):
+    """Cheapest option summary for the price check response."""
+
+    chain: str = Field(..., description="Chain code with the lowest unit price.")
+    unit_price: Decimal = Field(..., description="Lowest unit price found.")
+    savings_vs_most_expensive: str = Field(
+        ..., description="Percentage savings vs most expensive option."
+    )
+
+
+class PriceCheckResponse(BaseModel):
+    """Response for the price check endpoint."""
+
+    query: dict[str, str | None] = Field(..., description="Query parameters echoed back.")
+    product: PriceCheckProductInfo | None = Field(None, description="Product information.")
+    prices: list[PriceCheckEntry] = Field(..., description="Available prices across chains.")
+    cheapest: PriceCheckCheapest | None = Field(
+        None, description="Summary of the cheapest option found."
+    )
+
+
+@router.get("/price-check/", summary="Check current prices for a product across chains")
+async def price_check(
+    code: str = Query(
+        None,
+        description="Product code (Metro sifra, Konzum code, etc.). Required if 'name' not provided.",
+    ),
+    name: str = Query(
+        None,
+        description="Fuzzy product name search. Required if 'code' not provided.",
+    ),
+    chain: str = Query(
+        None,
+        description="Filter by chain code (metro, konzum, tommy, etc.).",
+    ),
+    city: str = Query(
+        "Dubrovnik",
+        description="Filter by city (default: Dubrovnik).",
+    ),
+) -> PriceCheckResponse:
+    """
+    Check current prices for a product across retail chains.
+
+    Returns prices from stores in the specified city (default: Dubrovnik)
+    for the last 3 days. Supports both exact product code lookup and
+    fuzzy name search.
+
+    Either 'code' or 'name' must be provided.
+    """
+    if not code and not name:
+        raise HTTPException(
+            status_code=400,
+            detail="Either 'code' or 'name' parameter must be provided.",
+        )
+
+    rows = await db.get_price_check(
+        code=code,
+        name=name,
+        chain=chain.lower() if chain else None,
+        city=city,
+    )
+
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail="No prices found for the given query.",
+        )
+
+    # Build product info from first row
+    first = rows[0]
+    product = PriceCheckProductInfo(
+        name=first["product_name"],
+        code=first["product_code"],
+        category=first.get("category"),
+    )
+
+    # Build price entries
+    prices: list[PriceCheckEntry] = []
+    for row in rows:
+        store_display = row.get("store_city") or row.get("store_address") or None
+        best_price = (
+            row["special_price"]
+            if row.get("special_price") and row["special_price"] < row["regular_price"]
+            else row["regular_price"]
+        )
+        prices.append(
+            PriceCheckEntry(
+                chain=row["chain"],
+                store=store_display,
+                price=best_price,
+                unit_price=row.get("unit_price"),
+                unit=row.get("unit"),
+                date=row["price_date"],
+                quantity=row.get("quantity"),
+            )
+        )
+
+    # Compute cheapest
+    cheapest: PriceCheckCheapest | None = None
+    unit_prices = [
+        (p.unit_price, p.chain)
+        for p in prices
+        if p.unit_price is not None and p.unit_price > 0
+    ]
+    if unit_prices:
+        min_up, min_chain = min(unit_prices)
+        max_up, _ = max(unit_prices)
+        if max_up > 0:
+            savings_pct = ((max_up - min_up) / max_up) * 100
+            cheapest = PriceCheckCheapest(
+                chain=min_chain,
+                unit_price=min_up,
+                savings_vs_most_expensive=f"{savings_pct:.1f}%",
+            )
+
+    return PriceCheckResponse(
+        query={
+            "code": code,
+            "name": name,
+            "chain": chain,
+            "city": city,
+        },
+        product=product,
+        prices=prices,
+        cheapest=cheapest,
+    )
+
+
+@router.get(
+    "/product-image/{chain_product_id}",
+    summary="Get product thumbnail image",
+    response_class=Response,
+    responses={
+        200: {"content": {"image/jpeg": {}}, "description": "JPEG thumbnail (200×200)."},
+        404: {"description": "Image not found."},
+    },
+)
+async def get_product_image(chain_product_id: int) -> Response:
+    """
+    Return the stored 200×200 JPEG thumbnail for a chain product.
+
+    Images are crawled and stored by the crawl_images.py script (runs weekly).
+    """
+    image_bytes = await db.get_product_image(chain_product_id)
+    if image_bytes is None:
+        raise HTTPException(status_code=404, detail="Image not found for this product.")
+    return Response(content=image_bytes, media_type="image/jpeg")

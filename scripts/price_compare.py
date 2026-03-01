@@ -1,9 +1,13 @@
 """
-Daily price comparison script.
+Daily price comparison script — Atrium Price Compare v3.
 
 Connects to both the Atrium DB (expenses/purchases) and the Cijene-API DB
 (grocery chain prices in Dubrovnik), matches purchased products with cheaper
 alternatives across chains, and sends an email report.
+
+Two databases:
+- ATRIUM_DATABASE_URL — ERP with tables troskovi + troskovi_detalji
+- DB_DSN — cijene-api with tables prices, chain_products, stores
 
 Matching strategy:
 1. Metro items: exact match by product code (sifra → chain_products.code)
@@ -11,6 +15,20 @@ Matching strategy:
 
 Usage:
     uv run python -m scripts.price_compare [--skip-email] [--debug]
+
+Testing workflow:
+    uv run python -m scripts.price_compare --skip-email --debug
+
+Cron configuration (Railway):
+    Script:   scripts/price_compare.py
+    Schedule: 0 9 * * * (09:00 daily, after 08:00 crawl)
+    Env vars: DB_DSN, ATRIUM_DATABASE_URL, MAILGUN_API_KEY,
+              MAILGUN_DOMAIN, REPORT_RECIPIENTS
+
+Supplier support:
+    Currently only Metro Cash & Carry is supported for exact code matching.
+    Supplier is identified via troskovi.opis (e.g. "METRO Cash & Carry d.o.o.").
+    TODO: Add `supplier` field logic when additional suppliers are onboarded.
 """
 
 import argparse
@@ -35,9 +53,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 CITY = "Dubrovnik"
-FUZZY_THRESHOLD = 72  # minimum score to consider a fuzzy match
+FUZZY_THRESHOLD = 80  # minimum score to consider a fuzzy match
 MIN_SAVINGS_EUR = 0.05  # minimum savings to report (€)
 MIN_SAVINGS_PCT = 5  # minimum savings percentage to report
+MAX_REALISTIC_WEIGHT_KG = 50  # sanity cap: items heavier than this are likely mis-parsed
+MAX_REALISTIC_SAVINGS_PCT = 90  # matches showing more savings than this are likely wrong
 
 # Metro chain_id in cijene-api DB
 METRO_CHAIN_ID = 7
@@ -158,6 +178,44 @@ class PriceMatch:
 
 
 @dataclass
+class TopExpenseItem:
+    """Top spending item from Atrium DB."""
+
+    opis: str
+    total_spend: float
+    total_qty: float
+    jedinica_mjere: str
+    avg_price: float
+    purchase_count: int
+    best_alternative: "ChainPrice | None" = None
+
+
+@dataclass
+class WeeklyTrendItem:
+    """Weekly price trend for an item."""
+
+    opis: str
+    sifra: str
+    last_week_avg: float | None
+    this_week_avg: float | None
+    last_week_qty: float
+    this_week_qty: float
+
+    @property
+    def change_pct(self) -> float | None:
+        if self.last_week_avg and self.last_week_avg > 0 and self.this_week_avg is not None:
+            return ((self.this_week_avg - self.last_week_avg) / self.last_week_avg) * 100
+        return None
+
+    @property
+    def trend_arrow(self) -> str:
+        pct = self.change_pct
+        if pct is None:
+            return "→"
+        return "↑" if pct > 0 else ("↓" if pct < 0 else "→")
+
+
+@dataclass
 class ComparisonReport:
     """Full comparison report."""
 
@@ -167,6 +225,8 @@ class ComparisonReport:
     matches_with_savings: list[PriceMatch] = field(default_factory=list)
     unmatched_items: list[PurchasedItem] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    top_expenses: list[TopExpenseItem] = field(default_factory=list)
+    weekly_trends: list[WeeklyTrendItem] = field(default_factory=list)
 
     @property
     def total_potential_savings(self) -> float:
@@ -224,6 +284,9 @@ QTY_PATTERNS = [
     ),
 ]
 
+# Regex for detecting pack/set formats like "30/1" that should be skipped
+PACK_FORMAT_RE = re.compile(r"^\d+/\d+")
+
 
 def extract_quantity(name: str) -> ParsedQuantity | None:
     """
@@ -274,6 +337,29 @@ def extract_quantity(name: str) -> ParsedQuantity | None:
     return None
 
 
+def parse_atrium_weight(opis: str) -> tuple[float, str] | None:
+    """Extract weight/volume from Metro product name prefix.
+
+    Returns (value_in_base_unit, unit_type) or None.
+    Examples: '180G ...' → (0.18, 'kg'), '1KG ...' → (1.0, 'kg'), '1L ...' → (1.0, 'L')
+    """
+    m = re.match(r"^(\d+[,.]?\d*)\s*(G|KG|ML|L|CL|DL)\b", opis, re.IGNORECASE)
+    if not m:
+        return None
+    val = float(m.group(1).replace(",", "."))
+    unit = m.group(2).upper()
+    conversions = {
+        "G": (0.001, "kg"),
+        "KG": (1.0, "kg"),
+        "ML": (0.001, "L"),
+        "CL": (0.01, "L"),
+        "DL": (0.1, "L"),
+        "L": (1.0, "L"),
+    }
+    factor, unit_type = conversions[unit]
+    return (val * factor, unit_type)
+
+
 def calc_normalized_price(
     price: float, qty: ParsedQuantity | None
 ) -> float | None:
@@ -299,31 +385,90 @@ def calc_purchased_norm_price(item: "PurchasedItem") -> tuple[ParsedQuantity | N
 
     Uses Atrium's unit of measure (KGM, LTR, H87) when available,
     otherwise falls back to extracting quantity from the product name.
-    """
-    # Try Atrium UOM first
-    uom = item.jedinica_mjere.strip().upper()
-    if uom in ATRIUM_UNIT_MAP:
-        base_unit, unit_type, amount_per_uom = ATRIUM_UNIT_MAP[uom]
-        qty = ParsedQuantity(
-            amount=amount_per_uom * item.kolicina,
-            unit=base_unit,
-            unit_type=unit_type,
-            original=f"{item.kolicina} {uom}",
-        )
-        if unit_type == "weight":
-            # jedinicna_cijena is per KGM → that IS the €/kg price
-            return qty, item.jedinicna_cijena
-        elif unit_type == "volume":
-            return qty, item.jedinicna_cijena
-        else:
-            # piece: try to extract from name for better comparison
-            name_qty = extract_quantity(item.opis)
-            if name_qty and name_qty.unit_type in ("weight", "volume"):
-                norm = calc_normalized_price(item.jedinicna_cijena, name_qty)
-                return name_qty, norm
-            return qty, None
 
-    # Fallback: extract from product name
+    New logic (v3):
+    - KGM: jedinicna_cijena is already €/kg → use directly
+    - H87 with weight prefix in opis (e.g. "180G", "1KG"): parse weight,
+      then compute jedinicna_cijena / weight_kg
+    - H87 without weight: return None for norm price (will be resolved later
+      via Metro unit_price lookup in the matching engine)
+    - Special pack formats like "30/1": skip (return None)
+    """
+    uom = item.jedinica_mjere.strip().upper()
+
+    # Skip zero quantity/price items
+    if item.kolicina <= 0 or item.jedinicna_cijena <= 0:
+        return None, None
+
+    if uom == "KGM":
+        # jedinicna_cijena is already €/kg
+        qty = ParsedQuantity(
+            amount=item.kolicina * 1000,
+            unit="g",
+            unit_type="weight",
+            original=f"{item.kolicina} KGM",
+        )
+        return qty, item.jedinicna_cijena
+
+    elif uom == "LTR":
+        # jedinicna_cijena is already €/L
+        qty = ParsedQuantity(
+            amount=item.kolicina * 1000,
+            unit="ml",
+            unit_type="volume",
+            original=f"{item.kolicina} LTR",
+        )
+        return qty, item.jedinicna_cijena
+
+    elif uom in ("H87", "C62"):
+        # Per piece — check for weight prefix in product name
+        # Skip "30/1" style pack formats
+        if PACK_FORMAT_RE.match(item.opis):
+            logger.debug("Skipping pack format item: %s", item.opis)
+            return None, None
+
+        parsed = parse_atrium_weight(item.opis)
+        if parsed is not None:
+            weight_val, weight_unit_type = parsed
+            # Sanity check: skip unrealistic weights (>MAX_REALISTIC_WEIGHT_KG per piece)
+            if weight_unit_type == "kg" and weight_val > MAX_REALISTIC_WEIGHT_KG:
+                logger.warning("Unrealistic weight %s kg for item: %s", weight_val, item.opis)
+                return None, None
+            if weight_unit_type == "kg" and weight_val > 0:
+                norm_price = item.jedinicna_cijena / weight_val
+                qty = ParsedQuantity(
+                    amount=weight_val * 1000,
+                    unit="g",
+                    unit_type="weight",
+                    original=f"{weight_val:.3f} kg",
+                )
+                return qty, norm_price
+            elif weight_unit_type == "L" and weight_val > 0:
+                norm_price = item.jedinicna_cijena / weight_val
+                qty = ParsedQuantity(
+                    amount=weight_val * 1000,
+                    unit="ml",
+                    unit_type="volume",
+                    original=f"{weight_val:.3f} L",
+                )
+                return qty, norm_price
+
+        # H87 without weight prefix — try extracting from name
+        name_qty = extract_quantity(item.opis)
+        if name_qty and name_qty.unit_type in ("weight", "volume"):
+            norm = calc_normalized_price(item.jedinicna_cijena, name_qty)
+            return name_qty, norm
+
+        # No weight info — will use Metro unit_price as fallback in matching engine
+        qty = ParsedQuantity(
+            amount=item.kolicina,
+            unit="kom",
+            unit_type="piece",
+            original=f"{item.kolicina} H87",
+        )
+        return qty, None
+
+    # Generic fallback: extract from product name
     name_qty = extract_quantity(item.opis)
     if name_qty:
         norm = calc_normalized_price(item.jedinicna_cijena, name_qty)
@@ -380,6 +525,9 @@ async def fetch_recent_purchases(
         cutoff,
     )
 
+    # NOTE: Currently only Metro Cash & Carry is supported for exact code matching.
+    # Supplier is identified via troskovi.opis (e.g. "METRO Cash & Carry d.o.o.").
+    # Future: parse dobavljac field to support additional suppliers.
     items = []
     for r in rows:
         items.append(
@@ -402,29 +550,59 @@ async def fetch_recent_purchases(
 async def fetch_dubrovnik_prices(
     conn: asyncpg.Connection,
 ) -> list[ChainPrice]:
-    """Fetch latest prices for all products in Dubrovnik stores."""
+    """Fetch latest prices for all products in Dubrovnik stores.
+
+    Uses prices.unit_price directly as primary comparison metric (€/kg or €/L).
+    Falls back to calculating from chain_products.quantity if unit_price == regular_price
+    (base.py fallback marker indicating no real unit price).
+    """
+    # First get Dubrovnik store IDs
+    store_ids = await conn.fetch(
+        "SELECT id FROM stores WHERE city ILIKE $1",
+        f"%{CITY}%",
+    )
+    if not store_ids:
+        logger.warning("No stores found for city: %s", CITY)
+        return []
+
+    dubrovnik_store_ids = [r["id"] for r in store_ids]
 
     rows = await conn.fetch(
         """
-        SELECT DISTINCT ON (cp.id)
-            c.code as chain,
-            cp.code as product_code,
-            cp.name as product_name,
+        SELECT
             p.regular_price,
             p.special_price,
-            p.unit_price
+            p.unit_price,
+            p.price_date,
+            cp.name AS product_name,
+            cp.code AS product_code,
+            cp.quantity,
+            cp.unit,
+            cp.category,
+            c.code AS chain,
+            s.id AS store_id
         FROM prices p
-        JOIN chain_products cp ON cp.id = p.chain_product_id
-        JOIN stores s ON s.id = p.store_id
-        JOIN chains c ON c.id = s.chain_id
-        WHERE s.city = $1
-        ORDER BY cp.id, p.price_date DESC
+        JOIN chain_products cp ON p.chain_product_id = cp.id
+        JOIN stores s ON p.store_id = s.id
+        JOIN chains c ON s.chain_id = c.id
+        WHERE s.id = ANY($1)
+          AND p.price_date >= CURRENT_DATE - INTERVAL '3 days'
+          AND p.unit_price IS NOT NULL
+          AND p.unit_price > 0
+        ORDER BY cp.code, p.unit_price ASC
         """,
-        CITY,
+        dubrovnik_store_ids,
     )
 
     prices = []
+    seen_codes: set[str] = set()
     for r in rows:
+        code = r["product_code"]
+        # Keep only the cheapest unit_price per product code (rows are ordered ASC)
+        if code in seen_codes:
+            continue
+        seen_codes.add(code)
+
         regular = float(r["regular_price"] or 0)
         special = float(r["special_price"]) if r["special_price"] else None
         db_unit_price = float(r["unit_price"]) if r["unit_price"] else None
@@ -434,15 +612,23 @@ async def fetch_dubrovnik_prices(
         # Extract quantity from product name
         parsed_qty = extract_quantity(product_name)
 
-        # Calculate normalized unit price (€/kg or €/L)
-        # Prefer DB unit_price if available, otherwise calculate from name qty
+        # Use DB unit_price directly as primary metric
+        # If unit_price == regular_price it may be a fallback marker — try from quantity
         norm_price = None
         unit_type = ""
         if db_unit_price and db_unit_price > 0:
-            # DB unit_price is typically €/kg or €/L
-            norm_price = db_unit_price
+            if db_unit_price != regular:
+                # Real unit price from DB
+                norm_price = db_unit_price
+            elif parsed_qty and parsed_qty.unit_type in ("weight", "volume"):
+                # Fallback: calculate from product quantity
+                norm_price = calc_normalized_price(best, parsed_qty)
+            else:
+                norm_price = db_unit_price
             if parsed_qty:
                 unit_type = parsed_qty.unit_type
+            elif r["unit"] and r["unit"].lower() in ("kg", "l"):
+                unit_type = "weight" if r["unit"].lower() == "kg" else "volume"
             else:
                 unit_type = "weight"  # assume weight if unknown
         elif parsed_qty:
@@ -452,7 +638,7 @@ async def fetch_dubrovnik_prices(
         prices.append(
             ChainPrice(
                 chain=r["chain"],
-                chain_product_code=r["product_code"],
+                chain_product_code=code,
                 product_name=product_name,
                 regular_price=regular,
                 special_price=special,
@@ -530,7 +716,7 @@ def find_fuzzy_alternatives(
         if len(norm_price_name) < 3:
             continue
 
-        score = fuzz.token_sort_ratio(norm_name, norm_price_name)
+        score = fuzz.token_set_ratio(norm_name, norm_price_name)
         if score >= FUZZY_THRESHOLD:
             matches.append((price, score))
 
@@ -623,16 +809,36 @@ def build_matches(
                 )
 
         if match and match.alternatives:
+            # H87 without weight: use Metro unit_price as reference if available
+            if match.purchased_norm_price is None and match.metro_price is not None:
+                if match.metro_price.unit_price and match.metro_price.unit_price > 0:
+                    match.purchased_norm_price = match.metro_price.unit_price
+                    if match.metro_price.unit_type:
+                        # Sync unit type for fair comparison
+                        if match.purchased_qty is None:
+                            match.purchased_qty = ParsedQuantity(
+                                amount=1.0,
+                                unit="kom",
+                                unit_type=match.metro_price.unit_type,
+                                original="Metro ref",
+                            )
+
             report.matched_items += 1
             best_alt = match.best_alternative
-            if (
-                best_alt
-                and match.savings_per_unit >= MIN_SAVINGS_EUR
-                and match.savings_pct >= MIN_SAVINGS_PCT
-            ):
-                report.matches_with_savings.append(match)
+            if best_alt and match.savings_per_unit >= MIN_SAVINGS_EUR and match.savings_pct >= MIN_SAVINGS_PCT:
+                # Sanity check: skip matches with >90% savings (likely wrong match)
+                if match.savings_pct > MAX_REALISTIC_SAVINGS_PCT:
+                    logger.warning(
+                        "Skipping suspicious match (>90%% savings): %s vs %s (%.0f%%)",
+                        item.opis,
+                        best_alt.product_name,
+                        match.savings_pct,
+                    )
+                else:
+                    report.matches_with_savings.append(match)
         elif match is None:
             report.unmatched_items.append(item)
+            logger.debug("Unmatched item: %s (sifra=%s)", item.opis, item.sifra)
 
     # Sort by savings potential (biggest first) — use normalized savings
     report.matches_with_savings.sort(
@@ -641,6 +847,130 @@ def build_matches(
     )
 
     return report
+
+
+# ---------------------------------------------------------------------------
+# Categories
+# ---------------------------------------------------------------------------
+
+CATEGORIES: dict[str, list[str]] = {
+    "Mliječni proizvodi": [
+        "jogurt", "sir", "mlijeko", "mozzarella", "cheddar", "edam",
+        "mascarpone", "vrhnje", "maslac",
+    ],
+    "Meso i mesni proizvodi": [
+        "pršut", "salama", "hrenovka", "kobasica", "debrecinka", "piletina",
+        "svinjetina", "šunka", "losos", "tuna",
+    ],
+    "Voće i povrće": [
+        "banana", "paprika", "patlidžan", "rajčica", "tikvice", "luk",
+        "grožđe", "jabuka", "limun",
+    ],
+    "Pekarski proizvodi": ["brašno", "kruh", "pecivo", "tortilla"],
+    "Jaja": ["jaja"],
+    "Pića": ["coca", "fanta", "sprite", "juice", "sok", "voda", "pivo", "vino"],
+    "Slastice": ["bomboni", "čokolada", "grickalice", "keks"],
+    "Začini i umaci": ["ketchup", "majoneza", "senf", "sol", "papar", "origano"],
+    "Kemija i potrošni": ["deterdžent", "sapun", "salveta", "folija", "vrećica"],
+}
+
+
+def categorize_item(name: str) -> str:
+    """Categorize a product by keyword matching."""
+    name_lower = name.lower()
+    for category, keywords in CATEGORIES.items():
+        for kw in keywords:
+            if kw in name_lower:
+                return category
+    return "Ostalo"
+
+
+# ---------------------------------------------------------------------------
+# Analytical queries
+# ---------------------------------------------------------------------------
+
+
+async def fetch_top_expenses(
+    conn: asyncpg.Connection,
+    limit: int = 10,
+) -> list[TopExpenseItem]:
+    """Fetch top N items by total spend over last 30 days from Atrium DB."""
+    rows = await conn.fetch(
+        """
+        SELECT td.opis,
+               SUM(td.ukupno) AS total_spend,
+               SUM(td.kolicina) AS total_qty,
+               td.jedinica_mjere,
+               AVG(td.jedinicna_cijena) AS avg_price,
+               COUNT(*) AS purchase_count
+        FROM troskovi_detalji td
+        JOIN troskovi t ON td.trosak_id = t.id
+        WHERE t.datum >= NOW() - INTERVAL '30 days'
+          AND td.kolicina > 0
+          AND td.jedinicna_cijena > 0
+        GROUP BY td.opis, td.jedinica_mjere
+        ORDER BY total_spend DESC
+        LIMIT $1
+        """,
+        limit,
+    )
+    return [
+        TopExpenseItem(
+            opis=r["opis"] or "",
+            total_spend=float(r["total_spend"] or 0),
+            total_qty=float(r["total_qty"] or 0),
+            jedinica_mjere=r["jedinica_mjere"] or "",
+            avg_price=float(r["avg_price"] or 0),
+            purchase_count=int(r["purchase_count"] or 0),
+        )
+        for r in rows
+    ]
+
+
+async def fetch_weekly_trend(
+    conn: asyncpg.Connection,
+) -> list[WeeklyTrendItem]:
+    """Fetch weekly price trend (this week vs last week) from Atrium DB."""
+    rows = await conn.fetch(
+        """
+        SELECT td.opis, td.sifra,
+               CASE WHEN t.datum >= NOW() - INTERVAL '7 days'
+                    THEN 'this_week' ELSE 'last_week' END AS period,
+               AVG(td.jedinicna_cijena) AS avg_price,
+               SUM(td.kolicina) AS total_qty
+        FROM troskovi_detalji td
+        JOIN troskovi t ON td.trosak_id = t.id
+        WHERE t.datum >= NOW() - INTERVAL '14 days'
+          AND td.kolicina > 0
+          AND td.jedinicna_cijena > 0
+        GROUP BY td.opis, td.sifra, period
+        ORDER BY td.opis
+        """
+    )
+
+    # Group by opis+sifra
+    items: dict[tuple[str, str], dict[str, float]] = {}
+    for r in rows:
+        key = (r["opis"] or "", r["sifra"] or "")
+        if key not in items:
+            items[key] = {}
+        period = r["period"]
+        items[key][f"{period}_avg"] = float(r["avg_price"] or 0)
+        items[key][f"{period}_qty"] = float(r["total_qty"] or 0)
+
+    result = []
+    for (opis, sifra), data in items.items():
+        result.append(
+            WeeklyTrendItem(
+                opis=opis,
+                sifra=sifra,
+                last_week_avg=data.get("last_week_avg"),
+                this_week_avg=data.get("this_week_avg"),
+                last_week_qty=data.get("last_week_qty", 0),
+                this_week_qty=data.get("this_week_qty", 0),
+            )
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -660,8 +990,84 @@ def _fmt_pct(n: float) -> str:
 def build_html(report: ComparisonReport) -> str:
     """Build MJML email and convert to HTML."""
 
+    # --- Top 10 najskupljih ---
+    top10_rows = []
+    for i, item in enumerate(report.top_expenses[:10]):
+        bg = "#f8f9fa" if i % 2 == 0 else "#ffffff"
+        alt_text = ""
+        if item.best_alternative:
+            alt = item.best_alternative
+            alt_text = f"{alt.chain.upper()} — {alt.product_name[:30]}"
+        top10_rows.append(f"""
+            <tr style="background:{bg}">
+              <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px">{i + 1}</td>
+              <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px"><strong>{item.opis[:50]}</strong></td>
+              <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;text-align:right">{_fmt(item.total_spend)}€</td>
+              <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;text-align:right">{_fmt(item.avg_price)}€</td>
+              <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px">{alt_text or "—"}</td>
+            </tr>
+        """)
+    top10_table = "\n".join(top10_rows) if top10_rows else """
+        <tr><td colspan="5" style="padding:20px;text-align:center;color:#888">Nema podataka</td></tr>
+    """
+
+    # --- Tjedni trend ---
+    trend_rows = []
+    for i, item in enumerate(report.weekly_trends[:20]):
+        bg = "#f8f9fa" if i % 2 == 0 else "#ffffff"
+        pct = item.change_pct
+        if pct is not None:
+            color = "#dc3545" if pct > 5 else ("#28a745" if pct < -5 else "#333")
+            pct_text = f"{item.trend_arrow} {abs(pct):.1f}%"
+        else:
+            color = "#888"
+            pct_text = "—"
+        lw = _fmt(item.last_week_avg) + "€" if item.last_week_avg else "—"
+        tw = _fmt(item.this_week_avg) + "€" if item.this_week_avg else "—"
+        trend_rows.append(f"""
+            <tr style="background:{bg}">
+              <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px">{item.opis[:50]}</td>
+              <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;text-align:right">{lw}</td>
+              <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;text-align:right">{tw}</td>
+              <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;text-align:right;color:{color};font-weight:bold">{pct_text}</td>
+            </tr>
+        """)
+    trend_table = "\n".join(trend_rows) if trend_rows else """
+        <tr><td colspan="4" style="padding:20px;text-align:center;color:#888">Nema podataka</td></tr>
+    """
+
+    # --- Kategorije ---
+    cat_totals: dict[str, float] = {}
+    cat_top: dict[str, tuple[str, float]] = {}
+    for item in report.matches_with_savings:
+        p = item.purchased
+        cat = categorize_item(p.opis)
+        cat_totals[cat] = cat_totals.get(cat, 0) + p.ukupno
+        existing = cat_top.get(cat)
+        if existing is None or p.ukupno > existing[1]:
+            cat_top[cat] = (p.opis, p.ukupno)
+
+    total_cat_spend = sum(cat_totals.values()) or 1.0
+    cat_rows = []
+    for i, (cat, total) in enumerate(sorted(cat_totals.items(), key=lambda x: -x[1])):
+        bg = "#f8f9fa" if i % 2 == 0 else "#ffffff"
+        pct_share = (total / total_cat_spend) * 100
+        top_item = cat_top.get(cat, ("—", 0))[0]
+        cat_rows.append(f"""
+            <tr style="background:{bg}">
+              <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px"><strong>{cat}</strong></td>
+              <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;text-align:right">{_fmt(total)}€</td>
+              <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;text-align:right">{pct_share:.1f}%</td>
+              <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px">{top_item[:40]}</td>
+            </tr>
+        """)
+    cat_table = "\n".join(cat_rows) if cat_rows else """
+        <tr><td colspan="4" style="padding:20px;text-align:center;color:#888">Nema podataka</td></tr>
+    """
+
+    # --- Detaljna usporedba ---
     savings_rows = []
-    for i, m in enumerate(report.matches_with_savings[:50]):  # limit to 50
+    for i, m in enumerate(report.matches_with_savings[:50]):
         best = m.best_alternative
         if not best:
             continue
@@ -669,11 +1075,9 @@ def build_html(report: ComparisonReport) -> str:
         bg = "#f8f9fa" if i % 2 == 0 else "#ffffff"
         match_icon = "🎯" if m.match_type == "exact_code" else "🔍"
         score_text = f" ({m.fuzzy_score}%)" if m.fuzzy_score else ""
-
         savings_color = "#28a745" if m.savings_pct >= 20 else "#ffc107"
-
-        # Show unit price info
         unit_label = m.comparison_unit
+
         paid_display = f"{_fmt(m.purchased.jedinicna_cijena)}€"
         if m.purchased_norm_price and m.purchased_qty and m.purchased_qty.unit_type in ("weight", "volume"):
             paid_display += f"<br><span style='color:#888;font-size:11px'>{_fmt(m.purchased_norm_price)} {unit_label}</span>"
@@ -682,12 +1086,8 @@ def build_html(report: ComparisonReport) -> str:
         if best.normalized_unit_price and best.unit_type in ("weight", "volume"):
             alt_display += f"<br><span style='color:#888;font-size:11px'>{_fmt(best.normalized_unit_price)} {unit_label}</span>"
 
-        qty_info = ""
-        if m.purchased_qty and m.purchased_qty.original:
-            qty_info = f" · {m.purchased_qty.original}"
-        alt_qty = ""
-        if best.parsed_qty and best.parsed_qty.original:
-            alt_qty = f" ({best.parsed_qty.original})"
+        qty_info = f" · {m.purchased_qty.original}" if m.purchased_qty and m.purchased_qty.original else ""
+        alt_qty = f" ({best.parsed_qty.original})" if best.parsed_qty and best.parsed_qty.original else ""
 
         savings_rows.append(f"""
             <tr style="background:{bg}">
@@ -695,20 +1095,14 @@ def build_html(report: ComparisonReport) -> str:
                 {match_icon} <strong>{m.purchased.opis}</strong>{score_text}
                 <br><span style="color:#888;font-size:11px">{m.purchased.dobavljac}{qty_info} · {m.purchased.datum}</span>
               </td>
-              <td style="padding:8px;border-bottom:1px solid #eee;font-size:13px;text-align:right">
-                {paid_display}
-              </td>
+              <td style="padding:8px;border-bottom:1px solid #eee;font-size:13px;text-align:right">{paid_display}</td>
               <td style="padding:8px;border-bottom:1px solid #eee;font-size:13px">
                 <strong style="color:#1a73e8">{best.chain.upper()}</strong><br>
                 <span style="font-size:11px">{best.product_name[:50]}{alt_qty}</span>
               </td>
+              <td style="padding:8px;border-bottom:1px solid #eee;font-size:13px;text-align:right"><strong>{alt_display}</strong></td>
               <td style="padding:8px;border-bottom:1px solid #eee;font-size:13px;text-align:right">
-                <strong>{alt_display}</strong>
-              </td>
-              <td style="padding:8px;border-bottom:1px solid #eee;font-size:13px;text-align:right">
-                <span style="color:{savings_color};font-weight:bold">
-                  -{_fmt(m.savings_per_unit)} {unit_label} ({_fmt_pct(m.savings_pct)})
-                </span>
+                <span style="color:{savings_color};font-weight:bold">-{_fmt(m.savings_per_unit)} {unit_label} ({_fmt_pct(m.savings_pct)})</span>
               </td>
             </tr>
         """)
@@ -720,6 +1114,12 @@ def build_html(report: ComparisonReport) -> str:
     """
 
     total_savings = report.total_potential_savings
+    top_saving = report.matches_with_savings[0] if report.matches_with_savings else None
+    top_saving_text = ""
+    if top_saving and top_saving.best_alternative:
+        top_saving_text = f"{top_saving.purchased.opis[:50]} → {top_saving.best_alternative.chain.upper()} (-{_fmt_pct(top_saving.savings_pct)})"
+
+    now_str = datetime.now().strftime("%d.%m.%Y. %H:%M")
 
     mjml_template = f"""
     <mjml>
@@ -731,84 +1131,138 @@ def build_html(report: ComparisonReport) -> str:
       </mj-head>
       <mj-body background-color="#f4f4f4">
 
-        <!-- Header -->
-        <mj-section background-color="#1a237e" padding="20px">
+        <!-- 1. Header -->
+        <mj-section background-color="#1a73e8" padding="20px">
           <mj-column>
             <mj-text align="center" color="#fff" font-size="22px" font-weight="bold">
-              💰 Usporedba cijena — Dubrovnik
+              💰 Dnevni izvještaj cijena — Atrium
             </mj-text>
-            <mj-text align="center" color="#b3bbff" font-size="13px">
+            <mj-text align="center" color="#d2e3fc" font-size="13px">
               {report.run_date.strftime('%d.%m.%Y.')} · Automatska analiza nabavki
             </mj-text>
           </mj-column>
         </mj-section>
 
-        <!-- Summary cards -->
+        <!-- 2. Sažetak -->
         <mj-section background-color="#ffffff" padding="15px 20px">
           <mj-column width="25%">
-            <mj-text align="center" font-size="24px" font-weight="bold" color="#1a237e">
+            <mj-text align="center" font-size="24px" font-weight="bold" color="#1a73e8">
               {report.total_purchased_items}
             </mj-text>
-            <mj-text align="center" font-size="11px" color="#888">
-              STAVKI PREGLEDANO
-            </mj-text>
+            <mj-text align="center" font-size="11px" color="#888">STAVKI PREGLEDANO</mj-text>
           </mj-column>
           <mj-column width="25%">
             <mj-text align="center" font-size="24px" font-weight="bold" color="#1a73e8">
               {report.matched_items}
             </mj-text>
-            <mj-text align="center" font-size="11px" color="#888">
-              PRONAĐENO U LANCIMA
-            </mj-text>
+            <mj-text align="center" font-size="11px" color="#888">PRONAĐENO U LANCIMA</mj-text>
           </mj-column>
           <mj-column width="25%">
             <mj-text align="center" font-size="24px" font-weight="bold" color="#28a745">
               {len(report.matches_with_savings)}
             </mj-text>
-            <mj-text align="center" font-size="11px" color="#888">
-              JEFTINIJIH OPCIJA
-            </mj-text>
+            <mj-text align="center" font-size="11px" color="#888">JEFTINIJIH OPCIJA</mj-text>
           </mj-column>
           <mj-column width="25%">
             <mj-text align="center" font-size="24px" font-weight="bold" color="#e65100">
               {_fmt(total_savings)}€
             </mj-text>
-            <mj-text align="center" font-size="11px" color="#888">
-              POTENCIJALNA UŠTEDA
-            </mj-text>
+            <mj-text align="center" font-size="11px" color="#888">POTENCIJALNA UŠTEDA</mj-text>
           </mj-column>
         </mj-section>
-
-        <mj-section background-color="#e8f5e9" padding="10px 20px">
+        {"" if not top_saving_text else f"""
+        <mj-section background-color="#e8f5e9" padding="8px 20px">
           <mj-column>
             <mj-text align="center" font-size="13px" color="#2e7d32">
-              🎯 = točan match po šifri &nbsp;&nbsp; 🔍 = fuzzy match po nazivu
+              🏆 Top ušteda: {top_saving_text}
             </mj-text>
           </mj-column>
         </mj-section>
+        """}
 
-        <!-- Savings table -->
-        <mj-section background-color="#ffffff" padding="0 10px">
+        <!-- 3. Top 10 najskupljih -->
+        <mj-section background-color="#ffffff" padding="0 10px 10px">
           <mj-column>
+            <mj-text font-size="16px" font-weight="bold" color="#1a73e8" padding="10px 0 5px">
+              📊 Top 10 najskupljih pozicija (zadnjih 30 dana)
+            </mj-text>
             <mj-table>
-              <tr style="background:#1a237e;color:#fff">
-                <th style="padding:10px;text-align:left;font-size:12px">PROIZVOD</th>
-                <th style="padding:10px;text-align:right;font-size:12px">PLAĆENO</th>
-                <th style="padding:10px;text-align:left;font-size:12px">JEFTINIJI LANAC</th>
-                <th style="padding:10px;text-align:right;font-size:12px">CIJENA</th>
-                <th style="padding:10px;text-align:right;font-size:12px">UŠTEDA</th>
+              <tr style="background:#1a73e8;color:#fff">
+                <th style="padding:8px;text-align:left;font-size:11px">#</th>
+                <th style="padding:8px;text-align:left;font-size:11px">PROIZVOD</th>
+                <th style="padding:8px;text-align:right;font-size:11px">UKUPNO €</th>
+                <th style="padding:8px;text-align:right;font-size:11px">PROSJ. CIJENA</th>
+                <th style="padding:8px;text-align:left;font-size:11px">ALTERNATIVA</th>
+              </tr>
+              {top10_table}
+            </mj-table>
+          </mj-column>
+        </mj-section>
+
+        <!-- 4. Tjedni trend -->
+        <mj-section background-color="#ffffff" padding="0 10px 10px">
+          <mj-column>
+            <mj-text font-size="16px" font-weight="bold" color="#1a73e8" padding="10px 0 5px">
+              📈 Tjedni trend cijena
+            </mj-text>
+            <mj-table>
+              <tr style="background:#1a73e8;color:#fff">
+                <th style="padding:8px;text-align:left;font-size:11px">PROIZVOD</th>
+                <th style="padding:8px;text-align:right;font-size:11px">PROŠLI TJEDAN</th>
+                <th style="padding:8px;text-align:right;font-size:11px">OVAJ TJEDAN</th>
+                <th style="padding:8px;text-align:right;font-size:11px">PROMJENA</th>
+              </tr>
+              {trend_table}
+            </mj-table>
+          </mj-column>
+        </mj-section>
+
+        <!-- 5. Kategorije -->
+        <mj-section background-color="#ffffff" padding="0 10px 10px">
+          <mj-column>
+            <mj-text font-size="16px" font-weight="bold" color="#1a73e8" padding="10px 0 5px">
+              🏷️ Potrošnja po kategorijama
+            </mj-text>
+            <mj-table>
+              <tr style="background:#1a73e8;color:#fff">
+                <th style="padding:8px;text-align:left;font-size:11px">KATEGORIJA</th>
+                <th style="padding:8px;text-align:right;font-size:11px">UKUPNO €</th>
+                <th style="padding:8px;text-align:right;font-size:11px">UDIO</th>
+                <th style="padding:8px;text-align:left;font-size:11px">TOP STAVKA</th>
+              </tr>
+              {cat_table}
+            </mj-table>
+          </mj-column>
+        </mj-section>
+
+        <!-- 6. Detaljna usporedba -->
+        <mj-section background-color="#ffffff" padding="0 10px 10px">
+          <mj-column>
+            <mj-text font-size="16px" font-weight="bold" color="#1a73e8" padding="10px 0 5px">
+              🔍 Detaljna usporedba cijena
+            </mj-text>
+            <mj-text font-size="12px" color="#888" padding="0 0 5px">
+              🎯 = točan match po šifri &nbsp;&nbsp; 🔍 = fuzzy match po nazivu
+            </mj-text>
+            <mj-table>
+              <tr style="background:#1a73e8;color:#fff">
+                <th style="padding:10px;text-align:left;font-size:11px">PROIZVOD</th>
+                <th style="padding:10px;text-align:right;font-size:11px">PLAĆENO</th>
+                <th style="padding:10px;text-align:left;font-size:11px">JEFTINIJI LANAC</th>
+                <th style="padding:10px;text-align:right;font-size:11px">CIJENA</th>
+                <th style="padding:10px;text-align:right;font-size:11px">UŠTEDA</th>
               </tr>
               {savings_table}
             </mj-table>
           </mj-column>
         </mj-section>
 
-        <!-- Footer -->
+        <!-- 7. Footer -->
         <mj-section background-color="#f4f4f4" padding="15px">
           <mj-column>
             <mj-text align="center" font-size="11px" color="#999">
               Cijene iz baze cijene-api ({CITY}) · Nabavke zadnjih 30 dana iz Atrium ERP-a
-              <br>Automatski generirano · Ne odgovaraj na ovaj email
+              <br>Generirano: {now_str} · Ne odgovaraj na ovaj email
             </mj-text>
           </mj-column>
         </mj-section>
@@ -959,16 +1413,25 @@ async def run_comparison(skip_email: bool = False) -> ComparisonReport:
         all_prices = await fetch_dubrovnik_prices(cijene_conn)
         logger.info(f"Found {len(all_prices)} product prices in {CITY}")
 
-        # 3. Build comparison report
+        # 3. Fetch analytics from Atrium
+        logger.info("Fetching top expenses from Atrium...")
+        top_expenses = await fetch_top_expenses(atrium_conn)
+
+        logger.info("Fetching weekly trends from Atrium...")
+        weekly_trends = await fetch_weekly_trend(atrium_conn)
+
+        # 4. Build comparison report
         logger.info("Matching products and finding savings...")
         report = build_matches(purchases, all_prices)
+        report.top_expenses = top_expenses
+        report.weekly_trends = weekly_trends
         logger.info(
             f"Results: {report.matched_items} matched, "
             f"{len(report.matches_with_savings)} with savings, "
             f"potential savings: {_fmt(report.total_potential_savings)}€"
         )
 
-        # 4. Send email
+        # 5. Send email
         if not skip_email:
             send_comparison_email(report)
         else:
