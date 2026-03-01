@@ -39,6 +39,9 @@ class Settings:
         self.mailgun_domain: str = os.getenv("MAILGUN_DOMAIN", "")
         self.report_recipients: str = os.getenv("REPORT_RECIPIENTS", "")
 
+        # Atrium database (for cost/expense tracking)
+        self.atrium_database_url: str = os.getenv("ATRIUM_DATABASE_URL", "")
+
     def get_db(self) -> "Database":
         """
         Get the database instance based on the configured settings.
