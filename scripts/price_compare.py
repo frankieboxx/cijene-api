@@ -284,6 +284,9 @@ QTY_PATTERNS = [
     ),
 ]
 
+# Regex for detecting pack/set formats like "30/1" that should be skipped
+PACK_FORMAT_RE = re.compile(r"^\d+/\d+")
+
 
 def extract_quantity(name: str) -> ParsedQuantity | None:
     """
@@ -420,7 +423,7 @@ def calc_purchased_norm_price(item: "PurchasedItem") -> tuple[ParsedQuantity | N
     elif uom in ("H87", "C62"):
         # Per piece — check for weight prefix in product name
         # Skip "30/1" style pack formats
-        if re.match(r"^\d+/\d+", item.opis):
+        if PACK_FORMAT_RE.match(item.opis):
             logger.debug("Skipping pack format item: %s", item.opis)
             return None, None
 

@@ -125,6 +125,23 @@ ALTER TABLE prices ALTER COLUMN regular_price SET NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_prices_price_date_chain_product
 ON prices (price_date, chain_product_id);
 
+-- Product images table for storing thumbnail images of chain products
+CREATE TABLE IF NOT EXISTS product_images (
+    id SERIAL PRIMARY KEY,
+    chain_product_id INTEGER NOT NULL REFERENCES chain_products (id),
+    ean VARCHAR(50),
+    image_data BYTEA NOT NULL,
+    image_format VARCHAR(10) NOT NULL DEFAULT 'jpeg',
+    width INTEGER NOT NULL DEFAULT 200,
+    height INTEGER NOT NULL DEFAULT 200,
+    source_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (chain_product_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_images_ean ON product_images (ean);
+
 -- Prices table to store min/max/avg prices per chain
 CREATE TABLE IF NOT EXISTS chain_prices (
     id SERIAL PRIMARY KEY,

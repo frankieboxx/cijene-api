@@ -386,6 +386,43 @@ class Database(ABC):
         pass
 
     @abstractmethod
+    async def get_price_check(
+        self,
+        code: str | None = None,
+        name: str | None = None,
+        chain: str | None = None,
+        city: str = "Dubrovnik",
+    ) -> list[dict[str, Any]]:
+        """
+        Get current prices for a product by code or fuzzy name.
+
+        Args:
+            code: Chain product code for exact match (optional).
+            name: Product name for fuzzy search (optional).
+            chain: Chain code to filter by (optional).
+            city: City to filter stores by (default: Dubrovnik).
+
+        Returns:
+            List of dicts with keys: chain, product_name, product_code,
+            category, quantity, unit, regular_price, special_price,
+            unit_price, price_date.
+        """
+        pass
+
+    @abstractmethod
+    async def get_product_image(self, chain_product_id: int) -> bytes | None:
+        """
+        Get stored thumbnail image bytes for a chain product.
+
+        Args:
+            chain_product_id: The chain product ID.
+
+        Returns:
+            JPEG image bytes or None if not found.
+        """
+        pass
+
+    @abstractmethod
     async def get_user_by_api_key(self, api_key: str) -> User | None:
         """
         Get active user by API key.
