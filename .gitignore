@@ -17,5 +17,6 @@ data/
 output/
 
 # Configuration
+.env
 *.log
 test_report.html
