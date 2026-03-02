@@ -1,8 +1,17 @@
-[build]
+# API service - long-running web server
+[services.api.build]
 dockerfilePath = "Dockerfile.railway"
 
-[deploy]
+[services.api.deploy]
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
+
+# Crawler service - cron job (runs and exits)
+[services.crawler.build]
+dockerfilePath = "Dockerfile.crawler"
+
+[services.crawler.deploy]
+startCommand = "bash /app/scripts/crawl-and-import.sh"
+restartPolicyType = "NEVER"

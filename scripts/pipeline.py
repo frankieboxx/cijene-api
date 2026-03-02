@@ -20,6 +20,7 @@ from time import time
 
 from crawler.crawl import crawl, crawl_chain, get_chains
 from crawler.store.output import copy_archive_info, create_archive
+from scripts.deals import run_deals_report
 from scripts.report import ChainReport, PipelineReport, send_report
 from service.config import settings
 
@@ -100,7 +101,7 @@ async def run_pipeline(
     logger.info(f"=== Pipeline start: {crawl_date} ===")
 
     # 1. Crawl
-    logger.info("[1/3] Crawling...")
+    logger.info("[1/4] Crawling...")
     chain_reports, crawl_elapsed, zip_path = run_crawl(
         output_dir, crawl_date, chain_list
     )
@@ -116,7 +117,7 @@ async def run_pipeline(
     import_error = None
 
     if zip_path.exists():
-        logger.info("[2/3] Importing...")
+        logger.info("[2/4] Importing...")
 
         # We need to capture per-chain new prices from the import.
         # The importer logs these, so we capture via a custom handler.
@@ -168,16 +169,23 @@ async def run_pipeline(
     )
 
     if skip_email:
-        logger.info("[3/3] Email skipped (--skip-email)")
+        logger.info("[3/4] Email skipped (--skip-email)")
         print(report.to_text())
     else:
-        logger.info("[3/3] Sending report email...")
+        logger.info("[3/4] Sending report email...")
         sent = send_report(report)
         if sent:
             logger.info("Report email sent successfully.")
         else:
             logger.warning("Report email was not sent. Printing to stdout:")
             print(report.to_text())
+
+    # 4. Dubrovnik deals report
+    logger.info("[4/4] Dubrovnik deals report...")
+    try:
+        await run_deals_report(crawl_date, skip_email=skip_email)
+    except Exception as e:
+        logger.error(f"Dubrovnik deals report failed: {e}")
 
     logger.info(f"=== Pipeline complete: {crawl_date} ===")
 
