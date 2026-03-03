@@ -14,4 +14,5 @@ dockerfilePath = "Dockerfile.crawler"
 
 [services.crawler.deploy]
 startCommand = "bash /app/scripts/crawl-and-import.sh"
+cronSchedule = "0 16 * * *"
 restartPolicyType = "NEVER"
