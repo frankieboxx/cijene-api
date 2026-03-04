@@ -2,7 +2,7 @@
 
 ## Base URL
 
-- **Production**: `https://api.cijene.dev`
+- **Production**: `https://api-production-37dc.up.railway.app`
 - **Local development**: `http://localhost:8000`
 - **Swagger UI**: `{base_url}/docs`
 
@@ -50,8 +50,8 @@ API info endpoint. No authentication required.
   "name": "Cijene API",
   "version": "0.1.0",
   "description": "Croatian grocery price tracking service",
-  "docs": "https://api.cijene.dev/docs",
-  "health": "https://api.cijene.dev/health"
+  "docs": "https://api-production-37dc.up.railway.app/docs",
+  "health": "https://api-production-37dc.up.railway.app/health"
 }
 ```
 

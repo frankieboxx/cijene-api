@@ -153,9 +153,9 @@ Retail chain websites
 
 ## Live API
 
-- **Base URL**: `https://api.cijene.dev`
-- **Swagger UI**: `https://api.cijene.dev/docs`
-- **Health check**: `https://api.cijene.dev/health`
+- **Base URL**: `https://api-production-37dc.up.railway.app`
+- **Swagger UI**: `https://api-production-37dc.up.railway.app/docs`
+- **Health check**: `https://api-production-37dc.up.railway.app/health`
 
 ## License
 

@@ -18,7 +18,7 @@ from datetime import date, datetime
 from pathlib import Path
 from time import time
 
-from crawler.crawl import crawl, crawl_chain, get_chains
+from crawler.crawl import crawl_chain, get_chains, STANDARD_CRAWLERS
 from crawler.store.output import copy_archive_info, create_archive
 from scripts.deals import run_deals_report
 from scripts.report import ChainReport, PipelineReport, send_report
@@ -234,7 +234,7 @@ def main() -> int:
     if args.chains:
         chain_list = [c.strip() for c in args.chains.split(",")]
     else:
-        chain_list = get_chains()
+        chain_list = list(STANDARD_CRAWLERS)
 
     output_dir = args.output_dir or Path(os.getenv("OUTPUT_DIR", "/app/output"))
     output_dir.mkdir(parents=True, exist_ok=True)

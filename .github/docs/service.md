@@ -4,8 +4,8 @@
 
 Web servis je REST API izgrađen s [FastAPI](https://fastapi.tiangolo.com/) frameworkom koji pruža pristup podacima o cijenama proizvoda u hrvatskim trgovačkim lancima.
 
-- **Swagger UI (interaktivna dokumentacija):** `https://api.cijene.dev/docs`
-- **OpenAPI schema:** `https://api.cijene.dev/openapi.json`
+- **Swagger UI (interaktivna dokumentacija):** `https://api-production-37dc.up.railway.app/docs`
+- **OpenAPI schema:** `https://api-production-37dc.up.railway.app/openapi.json`
 - **Health check:** `GET /health`
 
 ---
@@ -155,7 +155,7 @@ Settings se učitavaju iz environment varijabli (putem `python-dotenv`):
 | `HOST`                 | Bind adresa                       | `0.0.0.0`                        |
 | `DEBUG`                | Debug mod (hot reload)            | `false`                          |
 | `ROOT_PATH`            | Root path (za reverse proxy)      | `/`                              |
-| `BASE_URL`             | Javni URL servisa                 | `https://api.cijene.dev`         |
+| `BASE_URL`             | Javni URL servisa                 | `https://api-production-37dc.up.railway.app`         |
 | `TIMEZONE`             | Vremenska zona                    | `Europe/Zagreb`                  |
 | `MAILGUN_API_KEY`      | Mailgun API ključ                 | —                                |
 | `MAILGUN_DOMAIN`       | Mailgun domena                    | —                                |

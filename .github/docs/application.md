@@ -164,7 +164,7 @@ Aplikacija se konfigurira putem environment varijabli (`.env` datoteka). Ključn
 | `PORT`                 | Port na kojem servis sluša        | `8000`                           |
 | `DEBUG`                | Debug mod                         | `false`                          |
 | `TIMEZONE`             | Vremenska zona                    | `Europe/Zagreb`                  |
-| `BASE_URL`             | Javni URL servisa                 | `https://api.cijene.dev`         |
+| `BASE_URL`             | Javni URL servisa                 | `https://api-production-37dc.up.railway.app`         |
 | `MAILGUN_API_KEY`      | Mailgun API ključ                 | —                                |
 | `MAILGUN_DOMAIN`       | Mailgun domena                    | —                                |
 | `REPORT_RECIPIENTS`    | Email adrese primatelja izvještaja | —                                |

@@ -43,7 +43,7 @@ API available at `http://localhost:8000`, Swagger at `http://localhost:8000/docs
 |----------|---------|-------------|
 | `POSTGRES_PASSWORD` | — | Database password (required) |
 | `DB_DSN` | auto-generated | PostgreSQL connection string |
-| `BASE_URL` | `https://api.cijene.dev` | Public API URL |
+| `BASE_URL` | `https://api-production-37dc.up.railway.app` | Public API URL |
 | `DEBUG` | `false` | Enable debug mode (hot reload) |
 | `TIMEZONE` | `Europe/Zagreb` | Container timezone |
 | `PORT` | `8000` | API port |

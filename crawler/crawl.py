@@ -7,6 +7,7 @@ from time import time
 from typing import List
 
 from crawler.store.dm import DmCrawler
+from crawler.store.stanic import StanicCrawler
 from crawler.store.kaufland import KauflandCrawler
 from crawler.store.konzum import KonzumCrawler
 from crawler.store.lidl import LidlCrawler
@@ -29,7 +30,11 @@ CRAWLERS = {
     MetroCrawler.CHAIN: MetroCrawler,
     RibolaCrawler.CHAIN: RibolaCrawler,
     RotoCrawler.CHAIN: RotoCrawler,
+    StanicCrawler.CHAIN: StanicCrawler,
 }
+
+# All crawlers run in the standard daily pipeline
+STANDARD_CRAWLERS = list(CRAWLERS)
 
 
 def get_chains() -> List[str]:

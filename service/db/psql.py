@@ -836,7 +836,7 @@ class PostgresDatabase(Database):
                 param_idx += 1
 
             # Price date filter (last 3 days)
-            where.append(f"p.price_date >= CURRENT_DATE - INTERVAL '3 days'")
+            where.append("p.price_date >= CURRENT_DATE - INTERVAL '3 days'")
 
             if code:
                 # Exact code match

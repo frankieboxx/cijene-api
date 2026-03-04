@@ -66,7 +66,7 @@ async def list_archives() -> Dict[str, List[Dict[str, Any]]]:
         "archives": [
             {
                 "date": "YYYY-MM-DD",
-                "url": "https://api.cijene.dev/v0/archive/YYYY-MM-DD.zip",
+                "url": "https://api-production-37dc.up.railway.app/v0/archive/YYYY-MM-DD.zip",
                 "size": 123456,
                 "updated": "YYYY-MM-DDTHH:MM:SS+00:00"
             },

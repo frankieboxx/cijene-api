@@ -8,11 +8,20 @@ healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 
-# Crawler service - cron job (runs and exits)
+# Crawler service - cron job for all chains incl. Stanić wholesale (runs and exits)
 [services.crawler.build]
 dockerfilePath = "Dockerfile.crawler"
 
 [services.crawler.deploy]
 startCommand = "bash /app/scripts/crawl-and-import.sh"
 cronSchedule = "0 16 * * *"
+restartPolicyType = "NEVER"
+
+# Stanic product image crawler — weekly Wednesday night (23:00 Zagreb CEST = 21:00 UTC)
+[services.crawler-stanic-images.build]
+dockerfilePath = "Dockerfile.crawler"
+
+[services.crawler-stanic-images.deploy]
+startCommand = "bash /app/scripts/crawl-images-stanic.sh"
+cronSchedule = "0 21 * * 3"
 restartPolicyType = "NEVER"

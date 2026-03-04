@@ -5,7 +5,7 @@
 **Cijene API** is a Croatian grocery price tracking service that collects publicly available product pricing data from major Croatian retail chains (mandated by NN 75/2025) and exposes it through a REST API.
 
 **Repository**: `https://github.com/frankieboxx/cijene-api`
-**Live API**: `https://api.cijene.dev`
+**Live API**: `https://api-production-37dc.up.railway.app`
 **Language**: Python 3.13+
 
 ## Two-Component Architecture

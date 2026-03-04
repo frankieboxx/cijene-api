@@ -471,7 +471,7 @@ async def run_deals_report(
             logger.warning("Deals report email was not sent. Printing to stdout:")
             print(report.to_text())
 
-    logger.info(f"=== Dubrovnik Deals Report complete ===")
+    logger.info("=== Dubrovnik Deals Report complete ===")
     return report
 
 

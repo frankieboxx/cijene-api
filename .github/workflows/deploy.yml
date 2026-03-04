@@ -4,8 +4,9 @@ name: Deploy to Railway
 # Required GitHub repository configuration:
 #   Secrets: RAILWAY_TOKEN — Railway API token
 #   Variables:
-#     RAILWAY_API_SERVICE_ID — Railway API service ID
-#     RAILWAY_CRAWLER_SERVICE_ID — Railway crawler service ID
+#     RAILWAY_API_SERVICE_ID            — Railway API service ID
+#     RAILWAY_CRAWLER_SERVICE_ID        — Railway crawler service ID (all chains)
+#     RAILWAY_STANIC_IMAGES_SERVICE_ID  — Railway Stanić image crawler service ID
 #     (Railway project: c9eeed53-f5d1-4c5e-9eae-68793b4691c9)
 
 on:
@@ -39,3 +40,8 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: railway up --service ${{ vars.RAILWAY_CRAWLER_SERVICE_ID }}
+
+      - name: Deploy Stanić image crawler service
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --service ${{ vars.RAILWAY_STANIC_IMAGES_SERVICE_ID }}
